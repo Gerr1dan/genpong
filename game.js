@@ -15,6 +15,15 @@
     { id: 'mocktail', name: 'Mocktail', emoji: '🍹', color: '#ff5fa2' },
   ];
   const drinkById = (id) => DRINKS.find((d) => d.id === id) || DRINKS[0];
+  const CUP_COLORS = [
+    { id: 'red', name: 'Red', a: '#b81c1c', b: '#ee3b3b', c: '#a01414', rim: '#ff7b7b', inside: '#5a0d0d' },
+    { id: 'blue', name: 'Blue', a: '#1a3fa8', b: '#3b78f0', c: '#143088', rim: '#8fb4ff', inside: '#0b1a4a' },
+    { id: 'green', name: 'Green', a: '#157a3c', b: '#2ecf6a', c: '#0f5e2e', rim: '#8ff0b3', inside: '#07301a' },
+    { id: 'yellow', name: 'Yellow', a: '#c79a00', b: '#ffd23b', c: '#a87f00', rim: '#fff0a0', inside: '#5a4600' },
+    { id: 'purple', name: 'Purple', a: '#5e2a9e', b: '#9b5de5', c: '#4a2080', rim: '#cdb0ff', inside: '#26104a' },
+    { id: 'black', name: 'Black', a: '#15151c', b: '#3a3a48', c: '#0c0c12', rim: '#8a8aa0', inside: '#050508' },
+  ];
+  const cupById = (id) => CUP_COLORS.find((c) => c.id === id) || CUP_COLORS[0];
 
   // ---------- World (metres; table top is y=0, z runs away from the thrower) ----------
   const TABLE_W = 0.9, TABLE_L = 2.1;
@@ -35,11 +44,24 @@
     W = window.innerWidth; H = window.innerHeight;
     canvas.width = W * dpr; canvas.height = H * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    F = Math.min(W * 1.4, H * 1.0);
-    HY = H * 0.34;
+    applyView();
   }
-  window.addEventListener('resize', resize);
-  resize();
+  // Solo: close-up behind the table. Versus: pulled back and raised so both racks fit on screen.
+  function applyView() {
+    if (S.mode === 'versus' && S.screen === 'game') {
+      CAM.y = 1.8; CAM.z = -2.2;
+      const dzOwn = 0.1 - CAM.z, dzFar = TABLE_L - CAM.z;
+      const Fh = (W * 0.94 * dzOwn) / (2 * 0.37);
+      const Fv = (H * 0.72) / (CAM.y * (1 / dzOwn - 1 / dzFar));
+      F = Math.min(Fh, Fv);
+      const yTop = (F * CAM.y) / dzFar, yBot = (F * CAM.y) / dzOwn;
+      HY = H * 0.47 - (yBot - yTop) / 2 - yTop;
+    } else {
+      CAM.y = 1.0; CAM.z = -0.9;
+      F = Math.min(W * 1.4, H * 1.0);
+      HY = H * 0.34;
+    }
+  }
   function P(x, y, z) {
     const dz = z - CAM.z;
     return { x: W / 2 + (F * (x - CAM.x)) / dz, y: HY + (F * (CAM.y - y)) / dz, s: F / dz, dz };
@@ -156,9 +178,11 @@
     drag: null, wait: 0, after: null, particles: [], hintShown: false,
   };
   const settings = Object.assign(
-    { mode: 'solo', n1: '', d1: 'beer', n2: '', d2: 'water' },
+    { mode: 'solo', n1: '', d1: 'beer', c1: 'red', n2: '', d2: 'water', c2: 'blue' },
     JSON.parse(localStorage.getItem('genpong.settings') || '{}')
   );
+  window.addEventListener('resize', resize);
+  resize();
   const saveSettings = () => localStorage.setItem('genpong.settings', JSON.stringify(settings));
   const getBest = () => +(localStorage.getItem('genpong.best') || 0);
 
@@ -176,12 +200,28 @@
       el.appendChild(b);
     });
   }
+  function buildCupColors(el, key, other) {
+    el.innerHTML = '<span class="lbl">Cups</span>';
+    CUP_COLORS.forEach((c) => {
+      const b = document.createElement('button');
+      b.className = 'sw' + (settings[key] === c.id ? ' on' : '');
+      b.title = c.name; b.setAttribute('aria-label', c.name + ' cups');
+      b.style.background = `linear-gradient(90deg,${c.a},${c.b} 40%,${c.c})`;
+      b.onclick = () => {
+        settings[key] = c.id;
+        if (settings.mode === 'versus' && settings.c1 === settings.c2) settings[other] = CUP_COLORS.find((x) => x.id !== c.id).id;
+        saveSettings(); refreshMenu();
+      };
+      el.appendChild(b);
+    });
+  }
   function refreshMenu() {
     document.querySelectorAll('#modeSeg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === settings.mode));
     $('#p2').hidden = settings.mode !== 'versus';
     $('#p1').querySelector('label').textContent = settings.mode === 'versus' ? 'Player 1' : 'Your name';
     $('#n1').value = settings.n1; $('#n2').value = settings.n2;
     buildDrinks($('#d1'), 'd1'); buildDrinks($('#d2'), 'd2');
+    buildCupColors($('#k1'), 'c1', 'c2'); buildCupColors($('#k2'), 'c2', 'c1');
     const best = getBest();
     $('#best').textContent = best ? `Your solo best: ${best}` : '';
   }
@@ -197,7 +237,7 @@
   setMuteIcon();
 
   function showMenu() {
-    S.screen = 'menu'; S.phase = 'idle';
+    S.screen = 'menu'; S.phase = 'idle'; applyView();
     $('#menu').classList.remove('hidden'); $('#result').classList.add('hidden');
     $('#hud').classList.add('hidden'); $('#hint').classList.add('hidden');
     refreshMenu();
@@ -206,13 +246,14 @@
   // ---------- Flow ----------
   function startGame() {
     S.mode = settings.mode;
-    const p1 = { name: (settings.n1 || '').trim() || (S.mode === 'solo' ? 'You' : 'Player 1'), drink: drinkById(settings.d1), cups: makeRack() };
+    const p1 = { name: (settings.n1 || '').trim() || (S.mode === 'solo' ? 'You' : 'Player 1'), drink: drinkById(settings.d1), cup: cupById(settings.c1), cups: makeRack() };
     S.players = [p1];
     if (S.mode === 'versus')
-      S.players.push({ name: (settings.n2 || '').trim() || 'Player 2', drink: drinkById(settings.d2), cups: makeRack() });
+      S.players.push({ name: (settings.n2 || '').trim() || 'Player 2', drink: drinkById(settings.d2),
+        cup: cupById(settings.c2 === settings.c1 ? CUP_COLORS.find((x) => x.id !== settings.c1).id : settings.c2), cups: makeRack() });
     S.cur = 0; S.score = 0; S.streak = 0; S.cupsDown = 0; S.throwsUsed = 0; S.throwsLeft = SOLO_THROWS;
     S.throwsThisTurn = 0; S.hitsThisTurn = 0; S.particles = [];
-    S.screen = 'game';
+    S.screen = 'game'; applyView();
     $('#menu').classList.add('hidden'); $('#result').classList.add('hidden'); $('#hud').classList.remove('hidden');
     if (!S.hintShown) $('#hint').classList.remove('hidden');
     if (S.mode === 'versus') banner(`${p1.name} starts!`, false);
@@ -450,7 +491,7 @@
 
   function ellipse(x, y, rx, ry) { ctx.beginPath(); ctx.ellipse(x, y, Math.max(rx, 0.1), Math.max(ry, 0.1), 0, 0, Math.PI * 2); }
 
-  function drawCup(c, drink, lift = 0, alpha = 1, scale = 1) {
+  function drawCup(c, drink, cup, lift = 0, alpha = 1, scale = 1) {
     const rAt = (h) => CUP_RB + ((CUP_RT - CUP_RB) * h) / CUP_H;
     const pb = P(c.x, lift, c.z), pt = P(c.x, lift + CUP_H, c.z);
     const rb = CUP_RB * pb.s * scale, rt = CUP_RT * pt.s * scale;
@@ -464,7 +505,7 @@
     ctx.ellipse(pb.x, pb.y, rb, ryb, 0, Math.PI, 0, true);
     ctx.lineTo(pt.x + rt, pt.y); ctx.closePath();
     const bg = ctx.createLinearGradient(pt.x - rt, 0, pt.x + rt, 0);
-    bg.addColorStop(0, '#b81c1c'); bg.addColorStop(0.35, '#ee3b3b'); bg.addColorStop(1, '#a01414');
+    bg.addColorStop(0, cup.a); bg.addColorStop(0.35, cup.b); bg.addColorStop(1, cup.c);
     ctx.fillStyle = bg; ctx.fill();
     // white band
     const m1 = P(c.x, lift + CUP_H * 0.45, c.z), m2 = P(c.x, lift + CUP_H * 0.62, c.z);
@@ -473,14 +514,14 @@
     ctx.lineTo(m1.x + r1, m1.y); ctx.lineTo(m2.x + r2, m2.y); ctx.closePath();
     ctx.fillStyle = 'rgba(255,255,255,.88)'; ctx.fill();
     // inside
-    ctx.fillStyle = '#5a0d0d'; ellipse(pt.x, pt.y, rt, ryt); ctx.fill();
+    ctx.fillStyle = cup.inside; ellipse(pt.x, pt.y, rt, ryt); ctx.fill();
     // liquid
     const lp = P(c.x, lift + CUP_H * 0.86, c.z), lr = rAt(CUP_H * 0.86) * lp.s * 0.96 * scale;
     ctx.fillStyle = drink.color; ellipse(lp.x, lp.y, lr, (lr * (CAM.y - lift - CUP_H * 0.86)) / lp.dz); ctx.fill();
     if (drink.foam) { ctx.fillStyle = drink.foam; ctx.globalAlpha = alpha * 0.8; ellipse(lp.x, lp.y - 0.5, lr * 0.85, (lr * 0.85 * (CAM.y - CUP_H)) / lp.dz); ctx.fill(); ctx.globalAlpha = alpha; }
     ctx.fillStyle = 'rgba(255,255,255,.22)'; ellipse(lp.x - lr * 0.25, lp.y - 0.5, lr * 0.45, (lr * 0.2 * (CAM.y - CUP_H)) / lp.dz); ctx.fill();
     // rim
-    ctx.strokeStyle = '#ff7b7b'; ctx.lineWidth = Math.max(1.5, rt * 0.09); ellipse(pt.x, pt.y, rt, ryt); ctx.stroke();
+    ctx.strokeStyle = cup.rim; ctx.lineWidth = Math.max(1.5, rt * 0.09); ellipse(pt.x, pt.y, rt, ryt); ctx.stroke();
     ctx.restore();
   }
 
@@ -522,10 +563,15 @@
     drawTable();
     if (S.screen !== 'game' || !S.players.length) { drawIdleCups(); return; }
     const owner = target(), items = [];
-    for (const c of owner.cups) {
-      if (!c.dead) items.push({ z: c.z, draw: () => drawCup(c, owner.drink) });
-      else if (c.t < 0.7) items.push({ z: c.z, draw: () => drawCup(c, owner.drink, c.t * 0.5, 1 - c.t / 0.7, 1 + c.t * 0.3) });
-    }
+    const addRack = (pl, mirror) => {
+      for (const k of pl.cups) {
+        const c = mirror ? { x: k.x, z: TABLE_L - k.z } : k;
+        if (!k.dead) items.push({ z: c.z, draw: () => drawCup(c, pl.drink, pl.cup) });
+        else if (k.t < 0.7) items.push({ z: c.z, draw: () => drawCup(c, pl.drink, pl.cup, k.t * 0.5, 1 - k.t / 0.7, 1 + k.t * 0.3) });
+      }
+    };
+    addRack(owner, false);
+    if (S.mode === 'versus') addRack(S.players[S.cur], true);
     if (S.ballVisible) items.push({ z: S.ball.z, draw: () => drawBall(S.ball) });
     items.sort((a, b) => b.z - a.z);
     items.forEach((i) => i.draw());
@@ -537,7 +583,7 @@
     if (S.phase === 'aim') drawAim();
   }
   const idleRack = makeRack();
-  function drawIdleCups() { idleRack.forEach((c) => drawCup(c, drinkById(settings.d1))); }
+  function drawIdleCups() { idleRack.forEach((c) => drawCup(c, drinkById(settings.d1), cupById(settings.c1))); }
 
   // ---------- Loop ----------
   let last = performance.now();

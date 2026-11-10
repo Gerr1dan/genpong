@@ -28,19 +28,24 @@
     <p class="sub">Online edition &middot; keeping the tradition warm until 2027</p>
     <div class="seg" id="modeSeg">
       <button data-mode="solo" class="on">Solo</button>
-      <button data-mode="versus">2 Players</button>
+      <button data-mode="versus">Same screen</button>
+      <button data-mode="online">Online</button>
     </div>
     <div class="player" id="p1">
       <label>Player 1</label>
       <input id="n1" maxlength="16" placeholder="Your name" autocomplete="off">
       <div class="drinks" id="d1"></div>
-      <div class="cupsel" id="k1"></div>
     </div>
     <div class="player" id="p2" hidden>
       <label>Player 2</label>
       <input id="n2" maxlength="16" placeholder="Name" autocomplete="off">
       <div class="drinks" id="d2"></div>
-      <div class="cupsel" id="k2"></div>
+    </div>
+    <div id="onlineBox" hidden>
+      <button id="createBtn" class="primary">Create game</button>
+      <div class="or">or join a friend's game</div>
+      <div class="joinrow"><input id="codeIn" maxlength="4" placeholder="CODE" autocomplete="off" autocapitalize="characters" spellcheck="false"><button id="joinBtn" class="secondary">Join</button></div>
+      <p id="netStatus" class="small"></p>
     </div>
     <button id="play" class="primary">Play</button>
     <p id="best" class="small"></p>
@@ -48,10 +53,31 @@
   </div>
 </div>
 
+<div id="lobby" class="overlay hidden">
+  <div class="card">
+    <h2>Waiting for a friend…</h2>
+    <p class="sub">Send them this link, or tell them the code</p>
+    <div class="code" id="lobbyCode">····</div>
+    <input id="lobbyLink" class="linkbox" readonly>
+    <button class="primary" id="lobbyCopy">Copy invite link</button>
+    <button class="secondary" id="lobbyCancel">Cancel</button>
+  </div>
+</div>
+
+<div id="peerGone" class="overlay hidden">
+  <div class="card">
+    <h2>Game over</h2>
+    <p class="sub" id="peerGoneText"></p>
+    <button class="primary" id="peerGoneMenu">Back to menu</button>
+  </div>
+</div>
+
 <div id="result" class="overlay hidden">
   <div class="card" id="resultCard"></div>
 </div>
 
+<script src="config.js"></script>
+<script src="live.js"></script>
 <script src="game.js"></script>
 </body>
 </html>

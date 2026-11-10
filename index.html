@@ -9,6 +9,11 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="intro" class="hidden">
+  <video id="introVideo" playsinline muted autoplay preload="auto"></video>
+  <button id="introSound">🔊 Sound on</button>
+  <button id="introSkip">Skip ›</button>
+</div>
 
 <div id="hud" class="hidden">
   <div class="hud-side" id="hudL"></div>
@@ -20,6 +25,12 @@
   </div>
 </div>
 <div id="banner"></div>
+<div id="bubbleThem" class="bubble"></div>
+<div id="bubbleMe" class="bubble me"></div>
+<div id="emoteTray" class="sheet hidden"></div>
+<button id="emoteBtn" class="hidden" aria-label="React">😀</button>
+<button id="rerackBtn" class="hidden">🔄 Re-rack</button>
+<div id="rerackSheet" class="sheet hidden"></div>
 <div id="hint" class="hidden">Touch &amp; drag <b>down</b> (and sideways to aim), then release to throw</div>
 
 <div id="menu" class="overlay">
@@ -30,6 +41,7 @@
       <button data-mode="solo" class="on">Solo</button>
       <button data-mode="versus">Same screen</button>
       <button data-mode="online">Online</button>
+      <button data-mode="tour">Tournament</button>
     </div>
     <div class="player" id="p1">
       <label>Player 1</label>
@@ -47,7 +59,19 @@
       <div class="joinrow"><input id="codeIn" maxlength="4" placeholder="CODE" autocomplete="off" autocapitalize="characters" spellcheck="false"><button id="joinBtn" class="secondary">Join</button></div>
       <p id="netStatus" class="small"></p>
     </div>
+    <div id="tourBox" hidden>
+      <div class="joinrow"><input id="tourCodeIn" maxlength="5" placeholder="CODE" autocomplete="off" autocapitalize="characters" spellcheck="false"><button id="tourJoinBtn" class="secondary">Join</button></div>
+      <button id="tourResume" class="secondary" hidden></button>
+      <p id="tourStatus" class="small"></p>
+      <details class="org"><summary>Organizer: start a tournament</summary>
+        <input id="tourPass" type="password" placeholder="Organizer passphrase" autocomplete="off">
+        <label class="chk"><input type="checkbox" id="tourAlsoPlay" checked> I'm also playing</label>
+        <button id="tourCreateBtn" class="primary">Create tournament</button>
+      </details>
+    </div>
     <button id="play" class="primary">Play</button>
+    <div class="menulinks"><button id="qmToggle" class="linkbtn">💬 Quick messages</button><button id="introReplay" class="linkbtn" hidden>▶ Intro</button></div>
+    <div id="qmBox" hidden><div class="small dim">Send these to your opponent during online matches</div><div id="qmList"></div><button id="qmReset" class="linkbtn">Reset to defaults</button></div>
     <p id="best" class="small"></p>
     <p class="small dim">Unofficial fan-made game. Water is a perfectly valid drink.</p>
   </div>
@@ -72,6 +96,9 @@
   </div>
 </div>
 
+<div id="rps" class="overlay hidden"><div class="card" id="rpsCard"></div></div>
+<div id="tour" class="overlay hidden"><div class="card wide" id="tourCard"></div></div>
+
 <div id="result" class="overlay hidden">
   <div class="card" id="resultCard"></div>
 </div>
@@ -79,5 +106,6 @@
 <script src="config.js"></script>
 <script src="live.js"></script>
 <script src="game.js"></script>
+<script src="tournament.js"></script>
 </body>
 </html>

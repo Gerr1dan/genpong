@@ -57,6 +57,12 @@
   const THROW_ANGLE = (55 * Math.PI) / 180;
   const SOLO_THROWS = 15;
   const STEP = 1 / 240;
+  // Standard pub rules vs. the official GenPong 2025 rules (bounce = you pick the extra cup, 1 re-rack each, no balls back,
+  // rock-paper-scissors decides who starts in knockout matches).
+  const RULES_STD = { name: 'standard', ballsBack: true, bounceChoose: false, rerack: false, timeLimit: 0, rps: false };
+  const RULES_GENPONG = { name: 'genpong', ballsBack: false, bounceChoose: true, rerack: true, timeLimit: 0, rps: true };
+  const EMOJIS = ['😂', '🔥', '😱', '👏', '🎯', '😤', '🙈', '🍻'];
+  const DEFAULT_QM = ['Nice shot!', 'Lucky…', 'Drink up! 🍺', 'Is that all you got?', 'GG', 'Rematch?'];
 
   // ---------- Pure physics (shared by the game and the headless tests) ----------
   function launchVelocity(dx, dy, maxPull) {
@@ -138,12 +144,15 @@
     throwsThisTurn: 0, hitsThisTurn: 0,
     ball: newBall(), ballVisible: true, flightT: 0, remote: false, simDone: false, acc: 0, pendingThrow: null,
     drag: null, wait: 0, after: null, particles: [], hintShown: false,
+    rules: RULES_STD, shootout: null, hooks: null, timeEnd: 0, overtime: false, roundStart: 0, winner: 0,
+    pickT: 0, pickNear: null, pendingPick: null, lastSec: -1,
   };
   const settings = Object.assign(
-    { mode: 'solo', n1: '', d1: 'beer', n2: '', d2: 'water' },
+    { mode: 'solo', n1: '', d1: 'beer', n2: '', d2: 'water', qm: DEFAULT_QM.slice() },
     JSON.parse(localStorage.getItem('genpong.settings') || '{}')
   );
-  if (!['solo', 'versus', 'online'].includes(settings.mode)) settings.mode = 'solo';
+  if (!['solo', 'versus', 'online', 'tour'].includes(settings.mode)) settings.mode = 'solo';
+  if (!Array.isArray(settings.qm)) settings.qm = DEFAULT_QM.slice();
   const saveSettings = () => localStorage.setItem('genpong.settings', JSON.stringify(settings));
   const getBest = () => +(localStorage.getItem('genpong.best') || 0);
   const target = () => (S.mode === 'solo' ? S.players[0] : S.players[1 - S.cur]);
@@ -226,8 +235,12 @@
     document.querySelectorAll('#modeSeg button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
     $('#p2').hidden = m !== 'versus';
     $('#onlineBox').hidden = m !== 'online';
-    $('#play').hidden = m === 'online';
-    $('#p1').querySelector('label').textContent = m === 'versus' ? 'Player 1' : m === 'online' ? 'You' : 'Your name';
+    $('#tourBox').hidden = m !== 'tour';
+    $('#play').hidden = m === 'online' || m === 'tour';
+    $('#p1').querySelector('label').textContent = m === 'versus' ? 'Player 1' : m === 'online' || m === 'tour' ? 'You' : 'Your name';
+    $('#qmList').innerHTML = settings.qm.map((q, i) => `<input data-i="${i}" maxlength="40" placeholder="Quick message ${i + 1}" value="${esc(q || '')}">`).join('');
+    $('#qmList').querySelectorAll('input').forEach((inp) => (inp.oninput = () => { settings.qm[+inp.dataset.i] = inp.value; saveSettings(); }));
+    $('#introReplay').hidden = !(window.GENPONG_CONFIG || {}).introVideo;
     $('#n1').value = settings.n1; $('#n2').value = settings.n2;
     buildDrinks($('#d1'), 'd1'); buildDrinks($('#d2'), 'd2');
     const best = getBest();
@@ -247,29 +260,34 @@
   function showMenu() {
     S.screen = 'menu'; S.phase = 'idle'; S.mode = settings.mode === 'solo' ? 'solo' : 'versus'; applyView();
     $('#menu').classList.remove('hidden'); $('#result').classList.add('hidden'); $('#lobby').classList.add('hidden');
-    $('#hud').classList.add('hidden'); $('#hint').classList.add('hidden');
+    ['#hud', '#hint', '#rps', '#emoteTray', '#rerackSheet', '#peerGone'].forEach((q) => $(q).classList.add('hidden'));
     refreshMenu();
+    if (window.onGenpongMenu) window.onGenpongMenu();
   }
 
   // ---------- Match setup ----------
   const myProfile = () => ({ name: (settings.n1 || '').trim().slice(0, 16), drink: settings.d1 });
   function makePlayer(prof, i, fallback) {
     const drink = drinkById(prof.drink);
-    return { name: (prof.name || '').trim() || fallback, drink, team: TEAM[i], cups: makeRack(drink.cup) };
+    return { name: (prof.name || '').trim() || fallback, drink, team: TEAM[i], cups: makeRack(drink.cup), reracks: 1 };
   }
-  function beginMatch(players, first, mode) {
-    S.mode = mode; S.players = players; S.cur = first;
-    S.score = 0; S.streak = 0; S.cupsDown = 0; S.throwsUsed = 0; S.throwsLeft = SOLO_THROWS;
+  function beginMatch(players, first, mode, opts = {}) {
+    S.mode = mode; S.players = players; S.cur = first; S.roundStart = first; S.winner = first;
+    S.rules = opts.rules || RULES_STD; S.shootout = opts.shootout || null; S.hooks = opts.hooks || null;
+    S.timeEnd = S.rules.timeLimit ? Date.now() + S.rules.timeLimit * 1000 : 0; S.overtime = false; S.pendingPick = null;
+    $('#peerGone').classList.add('hidden'); $('#rps').classList.add('hidden'); $('#tour').classList.add('hidden');
+    S.score = 0; S.streak = 0; S.cupsDown = 0; S.throwsUsed = 0; S.throwsLeft = S.shootout ? S.shootout.balls : SOLO_THROWS;
     S.throwsThisTurn = 0; S.hitsThisTurn = 0; S.particles = []; S.pendingThrow = null; S.remote = false;
     S.screen = 'game'; applyView();
     $('#menu').classList.add('hidden'); $('#result').classList.add('hidden'); $('#lobby').classList.add('hidden');
     $('#hud').classList.remove('hidden');
     if (!S.hintShown && iAmThrower()) $('#hint').classList.remove('hidden');
     if (mode === 'versus') banner(S.live ? (S.cur === S.live.me ? 'You start!' : `${players[S.cur].name} starts!`) : `${players[first].name} starts!`, false);
+    else if (S.shootout) banner(S.shootout.title || `${S.throwsLeft} balls. Make them count!`, false);
     readyBall();
   }
   function startLocalGame() {
-    S.live = null;
+    S.live = null; S.hooks = null;
     const p1 = makePlayer(myProfile(), 0, settings.mode === 'solo' ? 'You' : 'Player 1');
     if (settings.mode === 'solo') return beginMatch([p1], 0, 'solo');
     const p2 = makePlayer({ name: settings.n2, drink: settings.d2 }, 1, 'Player 2');
@@ -291,7 +309,7 @@
   function throwBall(dx, dy) {
     const v = launchVelocity(dx, dy, maxPull());
     S.hintShown = true; $('#hint').classList.add('hidden');
-    if (S.live) Live.send({ t: 'throw', vx: v.vx, vy: v.vy, vz: v.vz });
+    if (S.live) netSend({ t: 'throw', vx: v.vx, vy: v.vy, vz: v.vz });
     launch(v, false);
   }
 
@@ -319,7 +337,7 @@
     S.phase = 'resolving';
     const owner = target(), hit = res.type === 'sunk';
     const bounced = hit && !!res.bounced;
-    if (S.live && !S.remote) Live.send({ t: 'res', hit, ci: hit ? owner.cups.indexOf(res.cup) : -1, bounced });
+    if (S.live && !S.remote) netSend({ t: 'res', hit, ci: hit ? owner.cups.indexOf(res.cup) : -1, bounced });
     if (hit) { S.ballVisible = false; spawnSplash(res.cup, owner.drink.color); sfx.sink(); } else sfx.miss();
     S.throwsUsed++;
     if (S.mode === 'solo') resolveSolo(hit, bounced, res.cup);
@@ -337,6 +355,11 @@
       banner(`${bounced ? 'BOUNCE SHOT! ' : ''}+${pts} ${me.drink.emoji}${S.streak > 1 ? '  x' + S.streak + ' streak' : ''}`, false);
     } else { S.streak = 0; banner('Miss!', true); }
     updateHud();
+    if (S.shootout) {
+      if (!alive(me.cups).length || S.throwsLeft <= 0) { if (!alive(me.cups).length) sfx.win(); later(1.1, finishShootout); }
+      else later(0.9, readyBall);
+      return;
+    }
     if (!alive(me.cups).length) {
       const bonus = S.throwsLeft * 50; S.score += bonus; sfx.win();
       later(1.1, () => showResult(true, bonus));
@@ -349,18 +372,68 @@
     S.throwsThisTurn++;
     if (hit) {
       S.hitsThisTurn++;
-      removeCups(opp.cups, cup, bounced ? 2 : 1);
+      removeCups(opp.cups, cup, bounced && !S.rules.bounceChoose ? 2 : 1);
       const you = S.live && S.live.me === 1 - S.cur;
       banner(`${bounced ? 'BOUNCE! ' : ''}${you ? 'You drink' : opp.name + ' drinks'} ${opp.drink.emoji}`, false);
+      if (bounced && S.rules.bounceChoose && alive(opp.cups).length) { startPick(cup); return; }
     } else banner('Miss!', true);
+    continueVersus();
+  }
+  const hitsBy = (i) => S.players[1 - i].cups.filter((c) => c.dead).length;
+  function continueVersus() {
+    const opp = S.players[1 - S.cur];
     updateHud();
-    if (!alive(opp.cups).length) { sfx.win(); later(1.2, () => showResult(true, 0)); return; }
+    if (S.hooks && S.hooks.progress) S.hooks.progress([hitsBy(0), hitsBy(1)]);
+    if (!alive(opp.cups).length) return finishVersus(S.cur);
     if (S.throwsThisTurn >= 2) {
-      const ballsBack = S.hitsThisTurn === 2;
+      const ballsBack = S.rules.ballsBack && S.hitsThisTurn === 2;
       S.throwsThisTurn = 0; S.hitsThisTurn = 0;
       if (ballsBack) later(1.2, () => { banner(`BALLS BACK! ${nameOf(S.cur)} again`, false); readyBall(); });
-      else later(1.2, () => { S.cur = 1 - S.cur; banner(turnText(), false); readyBall(); });
+      else later(1.2, () => {
+        S.cur = 1 - S.cur;
+        // time limit: decided after a full round (both players had the same number of turns)
+        if (S.timeEnd && Date.now() >= S.timeEnd && S.cur === S.roundStart) {
+          const h0 = hitsBy(0), h1 = hitsBy(1);
+          if (h0 !== h1) return finishVersus(h0 > h1 ? 0 : 1, true);
+          S.overtime = true; banner('Tied at time. Sudden death round!', false);
+        } else banner(turnText(), false);
+        readyBall();
+      });
     } else later(0.9, readyBall);
+  }
+  function finishVersus(winner, onTime) {
+    S.winner = winner; S.phase = 'resolving'; sfx.win();
+    if (S.live) S.live.finished = true;
+    if (S.hooks && S.hooks.end) S.hooks.end(winner, [hitsBy(0), hitsBy(1)]);
+    later(1.2, () => showResult(true, 0, onTime));
+  }
+  // bounce shot under GenPong rules: the thrower picks the extra cup
+  function startPick(hitCup) {
+    S.pickNear = hitCup;
+    if (iAmThrower()) { S.phase = 'pick'; S.pickT = 10; setTimeout(() => banner('Tap an extra cup to remove', false), 900); }
+    else { S.phase = 'waitPick'; if (S.pendingPick != null) { const ci = S.pendingPick; S.pendingPick = null; applyPick(target().cups[ci]); } }
+  }
+  function applyPick(c, send) {
+    if (!c || c.dead) c = nearestAlive(target().cups, S.pickNear);
+    if (!c) return continueVersus();
+    if (send && S.live) netSend({ t: 'pick', ci: target().cups.indexOf(c) });
+    c.dead = true; c.t = 0; S.phase = 'resolving'; sfx.sink();
+    continueVersus();
+  }
+  function nearestAlive(rack, ref) {
+    const left = alive(rack); if (!left.length) return null;
+    left.sort((a, b) => Math.hypot(a.x - ref.x, a.z - ref.z) - Math.hypot(b.x - ref.x, b.z - ref.z));
+    return left[0];
+  }
+  function finishShootout() {
+    S.phase = 'over';
+    const sh = S.shootout, cups = S.cupsDown;
+    if (sh.onDone) sh.onDone(cups);
+    $('#resultCard').innerHTML = `<h2>${cups} cup${cups === 1 ? '' : 's'}! ${cups >= 5 ? '🔥' : cups >= 3 ? '👏' : '🙈'}</h2>
+      <div class="sub">${esc(sh.doneText || 'Score submitted to the tournament.')}</div>
+      <button class="primary" id="backTour">Back to tournament</button>`;
+    $('#backTour').onclick = () => { $('#result').classList.add('hidden'); S.screen = 'menu'; S.phase = 'idle'; $('#hud').classList.add('hidden'); applyView(); if (sh.onExit) sh.onExit(); };
+    $('#result').classList.remove('hidden');
   }
   const nameOf = (i) => (S.live && S.live.me === i ? 'You' : S.players[i].name);
   const turnText = () => (S.live && S.cur === S.live.me ? 'Your turn!' : `${S.players[S.cur].name}'s turn`);
@@ -376,8 +449,13 @@
     if (S.mode === 'solo') {
       const me = S.players[0];
       L.className = 'hud-side'; R.innerHTML = '';
-      L.innerHTML = `<small>${esc(me.name)}</small><span class="big">${S.score}</span>`;
-      M.innerHTML = `${alive(me.cups).length} cups left<small>${S.throwsLeft} throws left${S.streak > 1 ? ' · 🔥 x' + S.streak : ''}</small>`;
+      if (S.shootout) {
+        L.innerHTML = `<small>${esc(me.name)}</small><span class="big">${S.cupsDown}</span>`;
+        M.innerHTML = `Cups hit<small>${S.throwsLeft} ball${S.throwsLeft === 1 ? '' : 's'} left</small>`;
+      } else {
+        L.innerHTML = `<small>${esc(me.name)}</small><span class="big">${S.score}</span>`;
+        M.innerHTML = `${alive(me.cups).length} cups left<small>${S.throwsLeft} throws left${S.streak > 1 ? ' · 🔥 x' + S.streak : ''}</small>`;
+      }
     } else {
       const [a, b] = S.players, me = S.live ? S.live.me : -1;
       L.className = 'hud-side' + (S.cur === 0 ? ' active' : '');
@@ -385,11 +463,13 @@
       L.innerHTML = `${a.drink.emoji} ${esc(a.name)}${me === 0 ? ' (you)' : ''}<small>${alive(a.cups).length} cups left</small>`;
       R.innerHTML = `${esc(b.name)}${me === 1 ? ' (you)' : ''} ${b.drink.emoji}<small>${alive(b.cups).length} cups left</small>`;
       const mine = !S.live || S.cur === me;
-      M.innerHTML = `${S.live ? (mine ? 'Your throw' : 'Watching ' + esc(S.players[S.cur].name)) : esc(S.players[S.cur].name)}<small>Throw ${Math.min(S.throwsThisTurn + 1, 2)}/2</small>`;
+      let clock = '';
+      if (S.timeEnd) { const left = Math.max(0, Math.ceil((S.timeEnd - Date.now()) / 1000)); clock = S.overtime || !left ? ' · ⏱ overtime' : ` · ⏱ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`; }
+      M.innerHTML = `${S.live ? (mine ? 'Your throw' : 'Watching ' + esc(S.players[S.cur].name)) : esc(S.players[S.cur].name)}<small>Throw ${Math.min(S.throwsThisTurn + 1, 2)}/2${clock}</small>`;
     }
   }
 
-  function showResult(cleared, bonus) {
+  function showResult(cleared, bonus, onTime) {
     S.phase = 'over';
     const card = $('#resultCard');
     if (S.mode === 'solo') {
@@ -412,14 +492,15 @@
       };
       $('#again').onclick = startLocalGame;
     } else {
-      const w = S.players[S.cur], l = S.players[1 - S.cur], iWon = S.live && S.live.me === S.cur;
+      const w = S.players[S.winner], l = S.players[1 - S.winner], iWon = S.live && S.live.me === S.winner;
       card.innerHTML = `
         <h2>${S.live ? (iWon ? 'You win! 🏆' : esc(w.name) + ' wins!') : esc(w.name) + ' wins! 🏆'}</h2>
         <div class="sub">${S.live && !iWon ? 'You drink' : esc(l.name) + ' drinks'} the rest ${l.drink.emoji} (or water. Water is fine.)</div>
-        <div class="stats"><div><b>${alive(w.cups).length}</b><span>${esc(w.name)}'s cups left</span></div>
+        ${onTime ? '<p class="small dim">Time was up: most cups hit wins.</p>' : ''}
+        <div class="stats"><div><b>${hitsBy(0)} – ${hitsBy(1)}</b><span>Cups hit</span></div>
         <div><b>${S.throwsUsed}</b><span>Total throws</span></div></div>
-        <button class="primary" id="again">Rematch</button>
-        <button class="secondary" id="toMenu">Menu</button>`;
+        ${S.hooks ? '<button class="primary" id="backTour">Back to tournament</button>' : '<button class="primary" id="again">Rematch</button><button class="secondary" id="toMenu">Menu</button>'}`;
+      if (S.hooks) { $('#backTour').onclick = exitToTournament; $('#result').classList.remove('hidden'); return; }
       $('#again').onclick = S.live ? requestRematch : startLocalGame;
     }
     $('#toMenu').onclick = () => { leaveLive(true); showMenu(); };
@@ -437,17 +518,30 @@
 
   // ---------- Online play ----------
   const Live = window.GenpongLive;
-  let pair = null; // {role:'host'|'guest', code, joinTimer}
+  let pair = null; // casual 1v1 lobby: {role:'host'|'guest', code, joinTimer}
+  let chan = null; // channel of the match being played
+  const netSend = (m) => { if (chan) chan.send(m); };
   const netStatus = (t, bad) => { const el = $('#netStatus'); el.textContent = t || ''; el.style.color = bad ? '#ff8a8a' : ''; };
   const linkFor = (code) => location.href.split('#')[0] + '#' + code;
-  const newCode = () => { const L = 'BCDFGHJKLMNPQRSTVWXZ'; let s = ''; for (let i = 0; i < 4; i++) s += L[Math.floor(Math.random() * L.length)]; return s; };
+  const newCode = (n = 4) => { const L = 'BCDFGHJKLMNPQRSTVWXZ'; let s = ''; for (let i = 0; i < n; i++) s += L[Math.floor(Math.random() * L.length)]; return s; };
+  async function hashStr(t) {
+    if (window.crypto && crypto.subtle) {
+      const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(t));
+      return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
+    }
+    let h = 5381; for (const ch of t) h = ((h * 33) ^ ch.charCodeAt(0)) >>> 0; return 'x' + h.toString(16);
+  }
+  async function openMatchChannel(code) {
+    if (chan) { const c = chan; chan = null; await c.close(true); }
+    chan = await Live.join(code, onLiveMsg, onLiveState, { heartbeat: true });
+  }
 
   async function createGame() {
     if (!Live) return netStatus('Online play is not available in this build.', true);
     leaveLive(true);
     const code = newCode(); pair = { role: 'host', code };
     netStatus('Connecting…');
-    try { await Live.open(code, onLiveMsg, onLiveState); } catch (e) { pair = null; return netStatus('Could not reach the game server. Check your connection and try again.', true); }
+    try { await openMatchChannel(code); } catch (e) { pair = null; return netStatus('Could not reach the game server. Check your connection and try again.', true); }
     netStatus('');
     $('#lobbyCode').textContent = code;
     $('#lobbyLink').value = linkFor(code);
@@ -459,61 +553,151 @@
     if (code.length !== 4) return netStatus('Enter the 4-letter code from your friend.', true);
     leaveLive(true);
     pair = { role: 'guest', code }; netStatus('Connecting…');
-    try { await Live.open(code, onLiveMsg, onLiveState); } catch (e) { pair = null; return netStatus('Could not reach the game server. Check your connection and try again.', true); }
+    try { await openMatchChannel(code); } catch (e) { pair = null; return netStatus('Could not reach the game server. Check your connection and try again.', true); }
     netStatus('Looking for the game…');
     let tries = 0;
     const ask = () => {
       if (!pair || pair.role !== 'guest' || S.live) return;
       if (tries++ >= 6) { leaveLive(true); return netStatus(`No game found with code ${code}. Check the code, or ask your friend to create a new one.`, true); }
-      Live.send({ t: 'join', profile: myProfile() });
+      netSend({ t: 'join', profile: myProfile() });
       pair.joinTimer = setTimeout(ask, 1500);
     };
     ask();
   }
   function leaveLive(sayBye) {
     if (pair && pair.joinTimer) clearTimeout(pair.joinTimer);
-    const was = !!(pair || S.live);
-    pair = null; S.live = null; S.pendingThrow = null;
-    if (Live && was) Live.close(sayBye);
-    $('#lobby').classList.add('hidden'); $('#peerGone').classList.add('hidden');
+    if (S.live && S.live.helloTimer) clearInterval(S.live.helloTimer);
+    pair = null; S.live = null; S.pendingThrow = null; S.pendingPick = null;
+    if (chan) { const c = chan; chan = null; c.close(sayBye); }
+    ['#lobby', '#peerGone', '#rps', '#emoteTray', '#rerackSheet'].forEach((q) => $(q).classList.add('hidden'));
   }
-  function startOnline(me, profs, first) {
-    S.live = { me, profs, first, rematchMe: false, rematchPeer: false };
+  function startOnline(me, profs, first, opts = {}) {
+    const prev = S.live || {};
+    S.live = { me, profs, first, rematchMe: false, rematchPeer: false, tour: prev.tour, started: true };
     $('#lobby').classList.add('hidden'); netStatus('');
     const players = [makePlayer(profs[0], 0, 'Player 1'), makePlayer(profs[1], 1, 'Player 2')];
     if (players[0].name === players[1].name) players[1].name += ' (2)';
-    beginMatch(players, first, 'versus');
+    beginMatch(players, first, 'versus', opts);
   }
+
+  // Tournament match: both players open the same room, say hello, play rock-paper-scissors, then the match.
+  async function playMatch(o) {
+    leaveLive(false);
+    S.hooks = o.hooks;
+    try { await openMatchChannel(o.room); } catch (e) { S.hooks = null; if (o.hooks.error) o.hooks.error(); return; }
+    S.live = { me: o.me, profs: o.profs, first: 0, tour: o, started: false, gotHello: false, rps: { round: 1, wins: [0, 0], mine: {}, commits: {}, reveals: {}, busy: false, log: '' } };
+    $('#tour').classList.add('hidden');
+    renderRps(`Waiting for ${esc(o.profs[1 - o.me].name || 'your opponent')} to join…`);
+    $('#rps').classList.remove('hidden');
+    const hello = () => netSend({ t: 'hello' });
+    hello(); S.live.helloTimer = setInterval(hello, 1500);
+  }
+  function tourMatchReady() {
+    const L = S.live;
+    if (L.tour.rules.rps) renderRps(); else startTourMatch(0);
+  }
+  function startTourMatch(first) {
+    const o = S.live.tour;
+    $('#rps').classList.add('hidden');
+    startOnline(o.me, o.profs, first, { rules: o.rules, hooks: o.hooks });
+  }
+
+  // ----- rock, paper, scissors (best of 3, commit-reveal so nobody can peek) -----
+  const RPS_E = { rock: '✊', paper: '✋', scissors: '✌️' }, BEATS = { rock: 'scissors', paper: 'rock', scissors: 'paper' };
+  function renderRps(status) {
+    const L = S.live; if (!L) return;
+    const R = L.rps, me = L.me, opp = L.profs[1 - me].name || 'Opponent';
+    const picked = R.mine[R.round];
+    $('#rpsCard').innerHTML = `<h2>Rock, paper, scissors</h2>
+      <div class="sub">Best of 3 decides who throws first</div>
+      <div class="stats"><div><b>${R.wins[me]}</b><span>You</span></div><div><b>${R.wins[1 - me]}</b><span>${esc(opp)}</span></div></div>
+      <div class="rpsbtns">${Object.keys(RPS_E).map((k) => `<button data-p="${k}" ${picked || status ? 'disabled' : ''} class="${picked && picked.p === k ? 'on' : ''}">${RPS_E[k]}</button>`).join('')}</div>
+      <p class="small">${status || (picked ? `Waiting for ${esc(opp)}…` : `Round ${R.round}: pick one`)}</p>
+      <p class="small dim">${R.log}</p>
+      <button class="secondary" id="rpsLeave">Leave match</button>`;
+    $('#rpsCard').querySelectorAll('.rpsbtns button').forEach((b) => (b.onclick = () => rpsPick(b.dataset.p)));
+    $('#rpsLeave').onclick = exitToTournament;
+  }
+  async function rpsPick(p) {
+    const L = S.live; if (!L || !L.rps) return;
+    const R = L.rps, r = R.round; if (R.mine[r]) return;
+    const nonce = Math.random().toString(36).slice(2);
+    R.mine[r] = { p, nonce, h: await hashStr(p + ':' + nonce) };
+    netSend({ t: 'rpsC', r, h: R.mine[r].h });
+    renderRps(); rpsCheck();
+  }
+  async function rpsCheck() {
+    const L = S.live; if (!L || !L.rps || L.started) return;
+    const R = L.rps, r = R.round, mine = R.mine[r];
+    if (mine && R.commits[r] && !mine.revealed) { mine.revealed = true; netSend({ t: 'rpsR', r, p: mine.p, nonce: mine.nonce }); }
+    if (!mine || !R.reveals[r] || R.busy) return;
+    R.busy = true;
+    const rev = R.reveals[r], ok = (await hashStr(rev.p + ':' + rev.nonce)) === R.commits[r] && RPS_E[rev.p];
+    const me = L.me, opp = L.profs[1 - me].name || 'Opponent';
+    let w; // winner index in players
+    if (!ok) w = me; else if (rev.p === mine.p) w = -1; else w = BEATS[mine.p] === rev.p ? me : 1 - me;
+    R.log = `You ${RPS_E[mine.p]} vs ${ok ? RPS_E[rev.p] : '?'} ${esc(opp)}: ${w === -1 ? 'draw' : w === me ? 'you take the round' : esc(opp) + ' takes the round'}`;
+    if (w >= 0) R.wins[w]++;
+    R.round++; R.busy = false;
+    if (w >= 0 && R.wins[w] >= 2) {
+      renderRps(w === me ? 'You win! You throw first.' : `${esc(opp)} wins and throws first.`);
+      setTimeout(() => { if (S.live && !S.live.started) startTourMatch(w); }, 1800);
+    } else { renderRps(); rpsCheck(); }
+  }
+
+  function exitToTournament() {
+    const h = S.hooks;
+    leaveLive(true);
+    ['#result', '#hud', '#hint', '#peerGone', '#rps'].forEach((q) => $(q).classList.add('hidden'));
+    S.screen = 'menu'; S.phase = 'idle'; S.hooks = null; S.players = []; applyView();
+    if (h && h.exit) h.exit();
+  }
+
   function onLiveMsg(m) {
-    if (m.t === 'join' && pair && pair.role === 'host' && !S.live) {
-      Live.send({ t: 'welcome', profile: myProfile(), to: m.f });
+    const L = S.live;
+    if (m.t === 'join' && pair && pair.role === 'host' && !L) {
+      netSend({ t: 'welcome', profile: myProfile(), to: m.f });
       startOnline(0, [myProfile(), m.profile || {}], 0);
-    } else if (m.t === 'welcome' && pair && pair.role === 'guest' && !S.live && m.to === Live.id()) {
+    } else if (m.t === 'welcome' && pair && pair.role === 'guest' && !L && m.to === chan.id) {
       clearTimeout(pair.joinTimer);
       startOnline(1, [m.profile || {}, myProfile()], 0);
-    } else if (!S.live) return;
+    } else if (!L) return;
+    else if (m.t === 'hello') {
+      if (L.tour && !L.started && !L.gotHello) { L.gotHello = true; clearInterval(L.helloTimer); netSend({ t: 'hello' }); tourMatchReady(); }
+    } else if (m.t === 'rpsC') { if (L.rps) { L.rps.commits[m.r] = m.h; rpsCheck(); } }
+    else if (m.t === 'rpsR') { if (L.rps) { L.rps.reveals[m.r] = { p: m.p, nonce: m.nonce }; rpsCheck(); } }
+    else if (m.t === 'emote') showEmote(m.x, false);
+    else if (m.t === 'bye') peerGone('Your opponent left the game.');
+    else if (!L.started) return;
     else if (m.t === 'throw') {
       const v = { vx: m.vx, vy: m.vy, vz: m.vz };
-      if (S.cur === S.live.me) return; // not their turn: ignore
+      if (S.cur === L.me) return; // not their turn: ignore
       if (S.phase === 'aim') launch(v, true); else S.pendingThrow = v;
     } else if (m.t === 'res') {
-      if (S.cur === S.live.me || (S.phase !== 'flying' && S.phase !== 'aim')) return;
+      if (S.cur === L.me || (S.phase !== 'flying' && S.phase !== 'aim')) return;
       const owner = target();
       endThrow({ type: m.hit ? 'sunk' : 'miss', cup: m.hit ? owner.cups[m.ci] : null, bounced: m.bounced });
+    } else if (m.t === 'pick') {
+      if (S.cur === L.me) return;
+      if (S.phase === 'waitPick') applyPick(target().cups[m.ci]); else S.pendingPick = m.ci;
+    } else if (m.t === 'rerack') {
+      if (S.cur === L.me) return;
+      applyRerack(target().cups, m.fm); S.players[S.cur].reracks--; banner(`${S.players[S.cur].name} re-racked your cups!`, false);
     } else if (m.t === 'rematch') {
-      S.live.rematchPeer = true; maybeRematch();
-    } else if (m.t === 'bye') {
-      peerGone('Your opponent left the game.');
+      L.rematchPeer = true; maybeRematch();
     }
   }
   function onLiveState(st) { if (st === 'lost' && S.live) peerGone('Lost contact with your opponent.'); }
   function peerGone(text) {
-    if (!S.live || S.screen !== 'game') return;
-    S.phase = 'over'; $('#peerGoneText').textContent = text; $('#peerGone').classList.remove('hidden');
+    if (!S.live || S.live.finished) return; // match already decided: leaving the result screen is fine
+    S.phase = 'over'; $('#rps').classList.add('hidden');
+    $('#peerGoneText').textContent = text + (S.hooks ? ' Tell the organizer: they can award the match or reset it.' : '');
+    $('#peerGoneMenu').textContent = S.hooks ? 'Back to tournament' : 'Back to menu';
+    $('#peerGone').classList.remove('hidden');
   }
   function requestRematch() {
     if (!S.live) return;
-    S.live.rematchMe = true; Live.send({ t: 'rematch' });
+    S.live.rematchMe = true; netSend({ t: 'rematch' });
     const b = $('#again'); if (b) { b.textContent = 'Waiting for opponent…'; b.disabled = true; }
     maybeRematch();
   }
@@ -526,11 +710,78 @@
   $('#codeIn').oninput = (e) => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, ''); };
   $('#lobbyCancel').onclick = () => { leaveLive(true); showMenu(); };
   $('#lobbyCopy').onclick = () => copyText(linkFor(pair ? pair.code : ''), $('#lobbyCopy'));
-  $('#peerGoneMenu').onclick = () => { leaveLive(false); showMenu(); };
+  $('#peerGoneMenu').onclick = () => { if (S.hooks) exitToTournament(); else { leaveLive(false); showMenu(); } };
   window.addEventListener('pagehide', () => { if (S.live || pair) leaveLive(true); });
+
+  // ----- emoji reactions & quick messages (live matches) -----
+  let lastEmote = 0;
+  function sendEmote(x) {
+    if (!S.live || Date.now() - lastEmote < 1200) return;
+    lastEmote = Date.now(); x = String(x).slice(0, 40);
+    netSend({ t: 'emote', x }); showEmote(x, true); $('#emoteTray').classList.add('hidden');
+  }
+  function showEmote(x, mine) {
+    const el = $(mine ? '#bubbleMe' : '#bubbleThem');
+    el.textContent = String(x).slice(0, 40); // textContent: never HTML from the other player
+    el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
+    clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2800);
+  }
+  $('#emoteBtn').onclick = () => {
+    const tray = $('#emoteTray');
+    if (!tray.classList.contains('hidden')) return tray.classList.add('hidden');
+    tray.innerHTML = `<div class="emojis">${EMOJIS.map((e) => `<button>${e}</button>`).join('')}</div>` +
+      settings.qm.filter((q) => q && q.trim()).map((q) => `<button class="qm">${esc(q)}</button>`).join('');
+    tray.querySelectorAll('button').forEach((b) => (b.onclick = () => sendEmote(b.textContent)));
+    tray.classList.remove('hidden');
+  };
+
+  // ----- re-rack (GenPong rules: once per player, the thrower picks the formation) -----
+  function formations(n) {
+    const dx = CUP_RT * 2 * 1.04, dz = dx * 0.866, zb = RACK_Z + 3 * dz;
+    const rows = (sizes) => { const pts = []; sizes.forEach((k, r) => { for (let i = 0; i < k; i++) pts.push([(i - (k - 1) / 2) * dx, zb - r * dz]); }); return pts; };
+    const sizes = []; let left = n, k = Math.min(4, Math.ceil((Math.sqrt(8 * n + 1) - 1) / 2));
+    while (left > 0) { const t = Math.min(k, left); sizes.push(t); left -= t; k = Math.max(1, k - 1); }
+    const list = [{ id: 'compact', name: [1].includes(n) ? 'Centre' : [3, 6, 10].includes(n) ? 'Triangle' : n === 2 ? 'Side by side' : 'Pyramid', pts: rows(sizes) }];
+    if (n === 2) list.push({ id: 'line', name: 'Line', pts: [[0, zb], [0, zb - dx]] });
+    if (n === 3) list.push({ id: 'line', name: 'Line', pts: [[-dx, zb], [0, zb], [dx, zb]] });
+    if (n === 4) list.push({ id: 'diamond', name: 'Diamond', pts: [[0, zb], [-dx / 2, zb - dz], [dx / 2, zb - dz], [0, zb - 2 * dz]] },
+      { id: 'square', name: 'Square', pts: [[-dx / 2, zb], [dx / 2, zb], [-dx / 2, zb - dx], [dx / 2, zb - dx]] });
+    if (n === 6) list.push({ id: 'zipper', name: 'Zipper', pts: [0, 1, 2, 3, 4, 5].map((i) => [(i % 2 ? 0.5 : -0.5) * dx, zb - i * dz * 0.58]) });
+    return list;
+  }
+  function applyRerack(rack, fid) {
+    const live = alive(rack), fs = formations(live.length), f = fs.find((x) => x.id === fid) || fs[0];
+    live.sort((a, b) => b.z - a.z || a.x - b.x).forEach((c, i) => { c.x = f.pts[i][0]; c.z = f.pts[i][1]; });
+  }
+  const canRerack = () => S.screen === 'game' && S.mode === 'versus' && S.rules.rerack && S.phase === 'aim' && iAmThrower() &&
+    !S.drag && S.players[S.cur].reracks > 0 && alive(target().cups).length > 0;
+  $('#rerackBtn').onclick = () => {
+    const sheet = $('#rerackSheet');
+    if (!sheet.classList.contains('hidden')) return sheet.classList.add('hidden');
+    const fs = formations(alive(target().cups).length);
+    sheet.innerHTML = `<div class="small dim">Re-rack ${esc(target().name)}'s cups (once per game)</div>` + fs.map((f) => `<button data-f="${f.id}">${f.name}</button>`).join('') + '<button data-f="" class="cancel">Cancel</button>';
+    sheet.querySelectorAll('button').forEach((b) => (b.onclick = () => {
+      sheet.classList.add('hidden');
+      if (!b.dataset.f || !canRerack()) return;
+      applyRerack(target().cups, b.dataset.f); S.players[S.cur].reracks--;
+      if (S.live) netSend({ t: 'rerack', fm: b.dataset.f });
+      banner('Re-racked!', false);
+    }));
+    sheet.classList.remove('hidden');
+  };
+  function cupAt(x, y) {
+    let best = null, bd = 1e9;
+    for (const c of alive(target().cups)) {
+      const p = P(c.x, CUP_H * 0.6, c.z), d = Math.hypot(p.x - x, p.y - y), r = Math.max(26, CUP_RT * p.s * 1.4);
+      if (d < r && d < bd) { bd = d; best = c; }
+    }
+    return best;
+  }
 
   // ---------- Input ----------
   canvas.addEventListener('pointerdown', (e) => {
+    $('#emoteTray').classList.add('hidden'); $('#rerackSheet').classList.add('hidden');
+    if (S.phase === 'pick' && iAmThrower()) { const c = cupAt(e.clientX, e.clientY); if (c) applyPick(c, true); return; }
     if (S.phase !== 'aim' || S.screen !== 'game' || !iAmThrower()) return;
     canvas.setPointerCapture(e.pointerId);
     S.drag = { sx: e.clientX, sy: e.clientY, cx: e.clientX, cy: e.clientY, id: e.pointerId };
@@ -575,6 +826,12 @@
       }
       if (S.acc > 0.25) S.acc = 0;
     }
+    if (S.phase === 'pick') { S.pickT -= dt; if (S.pickT <= 0) applyPick(null, true); }
+    if (S.timeEnd && S.screen === 'game') { const sec = Math.ceil((S.timeEnd - Date.now()) / 1000); if (sec !== S.lastSec) { S.lastSec = sec; updateHud(); } }
+    const rr = canRerack(), rb = $('#rerackBtn');
+    if (rr === rb.classList.contains('hidden')) rb.classList.toggle('hidden', !rr);
+    const eb = $('#emoteBtn'), showE = !!(S.live && S.live.started && S.screen === 'game');
+    if (showE === eb.classList.contains('hidden')) eb.classList.toggle('hidden', !showE);
     if (S.wait > 0) {
       S.wait -= dt;
       if (S.wait <= 0 && S.after) { const f = S.after; S.after = null; f(); }
@@ -765,6 +1022,13 @@
       ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(2, q.s * 0.012), 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
     }
     FLIP = false;
+    if (S.phase === 'pick' && iAmThrower()) {
+      const a = 0.55 + 0.4 * Math.sin(performance.now() / 180);
+      for (const c of alive(target().cups)) {
+        const p = P(c.x, CUP_H, c.z), r = CUP_RT * p.s * 1.25;
+        ctx.strokeStyle = `rgba(255,183,3,${a})`; ctx.lineWidth = 3; ellipse(p.x, p.y, r, (r * (CAM.y - CUP_H)) / p.dz + 3); ctx.stroke();
+      }
+    }
     if (S.phase === 'aim' && iAmThrower()) drawAim();
   }
   let idle = null, idleFor = '';
@@ -782,11 +1046,34 @@
   }
   requestAnimationFrame(frame);
 
+  $('#qmToggle').onclick = () => { $('#qmBox').hidden = !$('#qmBox').hidden; };
+  $('#qmReset').onclick = () => { settings.qm = DEFAULT_QM.slice(); saveSettings(); refreshMenu(); };
+
+  // ---------- Intro video (plays once per browser; skippable) ----------
+  function playIntro(force) {
+    const src = (window.GENPONG_CONFIG || {}).introVideo;
+    if (!src || (!force && localStorage.getItem('genpong.introSeen'))) return;
+    const ov = $('#intro'), v = $('#introVideo');
+    const done = () => { localStorage.setItem('genpong.introSeen', '1'); v.pause(); ov.classList.add('hidden'); };
+    v.src = src; v.muted = true; ov.classList.remove('hidden'); $('#introSound').classList.remove('hidden');
+    v.onended = done; v.onerror = done; $('#introSkip').onclick = done;
+    $('#introSound').onclick = () => { v.muted = false; v.play().catch(() => {}); $('#introSound').classList.add('hidden'); };
+    v.play().catch(() => {}); // muted autoplay is allowed on phones; sound needs a tap
+  }
+  $('#introReplay').onclick = () => playIntro(true);
+
   showMenu();
+  playIntro(false);
   // arrive via a shared link like  …/genpong/#KQFT  -> open the Online tab with the code filled in
   const hashCode = (location.hash || '').replace('#', '').toUpperCase();
   if (/^[A-Z]{4}$/.test(hashCode)) { settings.mode = 'online'; refreshMenu(); $('#codeIn').value = hashCode; netStatus('Add your name and a drink, then tap Join.'); }
 
+  // API for tournament.js
+  window.GP = {
+    profile: myProfile, drinkById, esc, newCode, hashStr, settings, RULES_GENPONG, showMenu, refreshMenu, playMatch,
+    startShootout(o) { leaveLive(false); S.hooks = null; beginMatch([makePlayer(myProfile(), 0, 'You')], 0, 'solo', { shootout: o }); },
+    busy: () => S.screen === 'game' || !!S.live,
+  };
   // test hooks (harmless in production)
-  window.__gp = { S, physStep, newBall, simulate, makeRack, launchVelocity, settings, throwBall, maxPull, alive, DRINKS, CUPS, drinkById, startLocalGame, drawCup, TEAM, P, resize, createGame, joinGame, ctx };
+  window.__gp = { formations, applyRerack, S, physStep, newBall, simulate, makeRack, launchVelocity, settings, throwBall, maxPull, alive, DRINKS, CUPS, drinkById, startLocalGame, drawCup, TEAM, P, resize, createGame, joinGame, ctx };
 })();

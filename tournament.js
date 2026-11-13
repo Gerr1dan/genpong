@@ -3,7 +3,7 @@
    The organizer's device is the referee: it keeps the tournament state, applies results and broadcasts the state
    (as a retained MQTT message, so late joiners and reloads catch up instantly). Players send it their scores/results.
    Format (from "The rules of GenPong 2025", adapted to 1v1 on your own device):
-     1. Elimination round: everyone throws 8 balls at a full rack; score = cups taken out (bounce shot = 2 cups).
+     1. Elimination round: everyone throws 8 balls at a full rack; score = cups taken out.
      2. Ladder: ranked by cups. The top 8 (or 4/2 with fewer players) go to the knockout rounds.
         Ties on the cut line go to a 2-ball sudden death (repeated until settled).
      3. Quarter-finals and semi-finals: clear the other side's cups, or most cups hit after 10 minutes.
@@ -237,7 +237,7 @@
     if (T.phase === 'lobby') action = me ? `<p>You're in! Waiting for the organizer to start the elimination round.</p>` : `<p>The tournament has started without you. You can still watch.</p>`;
     else if (T.phase === 'elim') {
       if (!me) action = '<p>Watching the elimination round.</p>';
-      else if (me.elim == null) action = `<p>Throw ${ELIM_BALLS} balls. Every cup counts, and a bounce shot is worth 2.</p><button class="primary" id="tPlayElim">🎯 Throw your ${ELIM_BALLS} balls</button>`;
+      else if (me.elim == null) action = `<p>Throw ${ELIM_BALLS} balls. Every cup counts.</p><button class="primary" id="tPlayElim">🎯 Throw your ${ELIM_BALLS} balls</button>`;
       else action = `<p>Your score: <b>${me.elim}</b> cup${me.elim === 1 ? '' : 's'}. Waiting for the others…</p>`;
     } else if (T.phase === 'sd') {
       const inSd = me && T.sd.players.includes(myPid);

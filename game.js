@@ -60,7 +60,7 @@
   // Standard pub rules vs. the official GenPong 2025 rules (bounce = you pick the extra cup, 1 re-rack each, no balls back,
   // rock-paper-scissors decides who starts in knockout matches).
   const RULES_STD = { name: 'standard', ballsBack: true, bounceChoose: false, rerack: false, timeLimit: 0, rps: false };
-  const RULES_GENPONG = { name: 'genpong', ballsBack: false, bounceChoose: true, rerack: true, timeLimit: 0, rps: true };
+  const RULES_GENPONG = { name: 'genpong', ballsBack: false, bounceChoose: false, rerack: true, timeLimit: 0, rps: true };
   const EMOJIS = ['😂', '🔥', '😱', '👏', '🎯', '😤', '🙈', '🍻'];
   const DEFAULT_QM = ['Nice shot!', 'Lucky…', 'Drink up! 🍺', 'Is that all you got?', 'GG', 'Rematch?'];
 
@@ -170,24 +170,33 @@
     applyView();
   }
   // Solo: close-up behind the table. Versus: pulled back and raised so both racks fit on screen.
+  let PS = 0, PC = 1; // camera pitch (sin, cos): looking down at the table
   function applyView() {
     if (S.mode === 'versus' && S.screen === 'game') {
+      // Pulled back and raised so both racks fit, and genuinely tilted down (not just shifted), so upright glasses
+      // are foreshortened like in a photo instead of looking stretched.
       CAM.y = 1.8; CAM.z = -2.2;
-      const dzOwn = 0.1 - CAM.z, dzFar = TABLE_L - CAM.z;
-      const Fh = (W * 0.94 * dzOwn) / (2 * 0.37);
-      const Fv = (H * 0.72) / (CAM.y * (1 / dzOwn - 1 / dzFar));
-      F = Math.min(Fh, Fv);
-      const yTop = (F * CAM.y) / dzFar, yBot = (F * CAM.y) / dzOwn;
-      HY = H * 0.47 - (yBot - yTop) / 2 - yTop;
+      const th = Math.atan2(CAM.y, TABLE_L * 0.5 - CAM.z);
+      PS = Math.sin(th); PC = Math.cos(th); F = 1; HY = 0;
+      const pts = [];
+      for (const x of [-TABLE_W / 2, TABLE_W / 2]) for (const z of [0.05, TABLE_L]) pts.push(P(x, 0, z));
+      for (const x of [-0.37, 0.37]) for (const z of [0.1, 0.65, 1.45, 2.0]) { pts.push(P(x, CUP_H + 0.05, z)); pts.push(P(x, 0, z)); }
+      pts.push(P(0, BALL0.y + 0.05, BALL0.z));
+      const us = pts.map((p) => p.x - W / 2), vs = pts.map((p) => p.y);
+      const umax = Math.max(...us.map(Math.abs)), vmin = Math.min(...vs), vmax = Math.max(...vs);
+      F = Math.min((W * 0.94) / (2 * umax), (H * 0.7) / (vmax - vmin));
+      HY = H * 0.5 - (F * (vmin + vmax)) / 2;
     } else {
-      CAM.y = 1.0; CAM.z = -0.9;
+      CAM.y = 1.0; CAM.z = -0.9; PS = 0; PC = 1;
       F = Math.min(W * 1.4, H * 1.0);
       HY = H * 0.34;
     }
   }
+  // Perspective projection with pitch. s = pixels per metre at that depth; k = how flat a horizontal circle looks there.
   function P(x, y, z) {
-    const dz = z - CAM.z;
-    return { x: W / 2 + (F * (x - CAM.x)) / dz, y: HY + (F * (CAM.y - y)) / dz, s: F / dz, dz };
+    const dx = x - CAM.x, dy = y - CAM.y, dz0 = z - CAM.z;
+    const zc = dz0 * PC - dy * PS, yc = dy * PC + dz0 * PS, s = F / zc;
+    return { x: W / 2 + dx * s, y: HY - yc * s, s, dz: zc, k: Math.abs(PS * zc - yc * PC) / zc };
   }
   // world point as seen by this viewer (when watching the opponent throw we look from the other end of the table)
   const PV = (x, y, z) => (FLIP ? P(-x, y, TABLE_L - z) : P(x, y, z));
@@ -349,8 +358,8 @@
     S.throwsLeft--;
     if (hit) {
       S.streak++;
-      S.cupsDown += removeCups(me.cups, cup, bounced ? 2 : 1);
-      const pts = (bounced ? 200 : 100) + (S.streak - 1) * 50;
+      S.cupsDown += removeCups(me.cups, cup, 1); // a bounce shot is just one cup
+      const pts = 100 + (S.streak - 1) * 50;
       S.score += pts;
       banner(`${bounced ? 'BOUNCE SHOT! ' : ''}+${pts} ${me.drink.emoji}${S.streak > 1 ? '  x' + S.streak + ' streak' : ''}`, false);
     } else { S.streak = 0; banner('Miss!', true); }
@@ -372,7 +381,7 @@
     S.throwsThisTurn++;
     if (hit) {
       S.hitsThisTurn++;
-      removeCups(opp.cups, cup, bounced && !S.rules.bounceChoose ? 2 : 1);
+      removeCups(opp.cups, cup, 1); // a bounce shot is just one cup
       const you = S.live && S.live.me === 1 - S.cur;
       banner(`${bounced ? 'BOUNCE! ' : ''}${you ? 'You drink' : opp.name + ' drinks'} ${opp.drink.emoji}`, false);
       if (bounced && S.rules.bounceChoose && alive(opp.cups).length) { startPick(cup); return; }
@@ -872,7 +881,7 @@
     const st = CUPS[drink.cup] || CUPS.solo;
     const at = (h) => {
       const y = lift + h * CUP_H, p = PV(c.x, y, c.z), rx = profAt(st.prof, h) * CUP_RT * p.s * scale;
-      return { x: p.x, y: p.y, rx, ry: (rx * (CAM.y - y)) / p.dz, s: p.s };
+      return { x: p.x, y: p.y, rx, ry: rx * p.k, s: p.s };
     };
     const base = at(0), top = at(1);
     // closed outline of the glass between heights h0..h1 (inset shrinks it for the liquid)
@@ -973,7 +982,7 @@
     const p = PV(b.x, b.y, b.z), r = Math.max(BALL_R * p.s, 2.5);
     if (b.y >= 0 && b.z >= 0 && b.z <= TABLE_L && Math.abs(b.x) <= TABLE_W / 2) {
       const sh = PV(b.x, 0, b.z), k = clamp(1 - b.y * 0.8, 0.25, 1);
-      ctx.fillStyle = `rgba(0,0,0,${0.3 * k})`; ellipse(sh.x, sh.y, BALL_R * sh.s * 1.1, (BALL_R * sh.s * 1.1 * CAM.y) / sh.dz); ctx.fill();
+      ctx.fillStyle = `rgba(0,0,0,${0.3 * k})`; ellipse(sh.x, sh.y, BALL_R * sh.s * 1.1, BALL_R * sh.s * 1.1 * sh.k); ctx.fill();
     }
     const g = ctx.createRadialGradient(p.x - r * 0.35, p.y - r * 0.35, r * 0.1, p.x, p.y, r);
     g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#d9d4c4');
@@ -1026,7 +1035,7 @@
       const a = 0.55 + 0.4 * Math.sin(performance.now() / 180);
       for (const c of alive(target().cups)) {
         const p = P(c.x, CUP_H, c.z), r = CUP_RT * p.s * 1.25;
-        ctx.strokeStyle = `rgba(255,183,3,${a})`; ctx.lineWidth = 3; ellipse(p.x, p.y, r, (r * (CAM.y - CUP_H)) / p.dz + 3); ctx.stroke();
+        ctx.strokeStyle = `rgba(255,183,3,${a})`; ctx.lineWidth = 3; ellipse(p.x, p.y, r, r * p.k + 3); ctx.stroke();
       }
     }
     if (S.phase === 'aim' && iAmThrower()) drawAim();

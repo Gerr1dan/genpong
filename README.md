@@ -14,7 +14,7 @@ Browser beer pong (drag to throw). Static site: GitHub Pages serves it as is.
 3. **Start elimination round**: everyone throws 8 balls on their own device; cups hit go on the ladder.
 4. **Close elimination round**: the top 8 (or 4 / 2) go through. Ties on the cut line play a 2-ball sudden death.
 5. Knockout: quarter-finals and semi-finals (10 minutes, then most cups hit wins), final without time limit.
-   Every knockout match starts with best-of-3 rock-paper-scissors. Bounce shot: the thrower picks the extra cup.
+   Every knockout match starts with best-of-3 rock-paper-scissors. A bounce shot counts as one cup.
    One re-rack per player per game.
 6. Your device is the referee: keep it open. If you close it, the tournament pauses; resume from the Tournament tab.
    You can award or reset any match from the bracket (e.g. after a disconnect).
